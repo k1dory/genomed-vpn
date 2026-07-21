@@ -1,0 +1,12 @@
+# Rust / Tauri
+/src-tauri/target/
+**/*.rs.bk
+
+# промежуточные файлы генерации иконок
+/src-tauri/app-icon.png
+/src-tauri/tray-src.png
+/src-tauri/dna-white.png
+
+# OS
+.DS_Store
+Thumbs.db

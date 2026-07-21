@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="card">
+    <div class="brand">
+      <img class="logo" src="logo.png" alt="Genomed VPN" />
+    </div>
+
+    <div class="toggle-row">
+      <button id="toggle" class="toggle"><span class="knob"></span></button>
+      <div class="labels">
+        <div id="state" class="state">Проверка…</div>
+        <div id="ip" class="ip"></div>
+      </div>
+    </div>
+
+    <div class="field">
+      <label>Сервер</label>
+      <input id="url" type="text" readonly />
+    </div>
+
+    <button id="help" class="help">Помощь</button>
+  </div>
+  <script type="module" src="main.js"></script>
+</body>
+</html>

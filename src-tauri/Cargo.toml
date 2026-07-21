@@ -1,0 +1,27 @@
+[package]
+name = "genomed-vpn"
+version = "1.0.0"
+description = "Genomed VPN"
+authors = ["Genomed"]
+license = ""
+edition = "2021"
+rust-version = "1.60"
+
+[build-dependencies]
+tauri-build = { version = "1.5", features = [] }
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "1.6", features = ["shell-open", "system-tray"] }
+
+[features]
+# по умолчанию Tauri использует custom-protocol для продакшн-сборки
+custom-protocol = ["tauri/custom-protocol"]
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true

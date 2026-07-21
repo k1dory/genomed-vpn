@@ -8,6 +8,8 @@ const el = {
   help: document.getElementById("help"),
 };
 
+const SPIN = '<span class="spinner"></span>';
+
 const VIEW = {
   Connected:    { cls: "on",      text: "Подключено" },
   Connecting:   { cls: "pending", text: "Подключение…" },
@@ -42,7 +44,9 @@ async function refresh() {
   const v = VIEW[key] ?? VIEW.Unknown;
 
   el.toggle.className = `toggle ${v.cls}`;
-  el.state.textContent = v.text;
+  // для промежуточных состояний — крутящийся кружок вместо статичного текста
+  if (v.cls === "pending") el.state.innerHTML = SPIN + v.text;
+  else el.state.textContent = v.text;
   el.ip.textContent = s.state === "Connected" ? s.ip : "";
   el.url.value = s.mgmt_url;
   el.toggle.disabled = s.state === "NotInstalled";
@@ -51,7 +55,8 @@ async function refresh() {
 el.toggle.onclick = async () => {
   if (current === "NotInstalled") return;
   busy = true;
-  el.state.textContent = "…";
+  el.toggle.className = "toggle pending";
+  el.state.innerHTML = SPIN + (current === "Connected" ? "Отключение…" : "Подключение…");
   try {
     if (current === "Connected") await invoke("nb_down");
     else await invoke("nb_up");   // при NeedsLogin netbird сам откроет браузер

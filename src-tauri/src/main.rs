@@ -92,16 +92,31 @@ fn nb_status() -> Status {
     Status {
         state: state.into(),
         ip: v["netbirdIp"].as_str().unwrap_or("").to_string(),
-        mgmt_url: v["management"]["url"].as_str().unwrap_or(MGMT_URL).to_string(),
+        // всегда показываем НАШ сервер: приложение работает только с ним,
+        // а netbird до первого переключения докладывает свой дефолт (api.netbird.io)
+        mgmt_url: MGMT_URL.into(),
         mgmt_ok: v["management"]["connected"].as_bool().unwrap_or(false),
     }
 }
 
 #[tauri::command]
 fn nb_up() -> Result<(), String> {
-    cmd(&["up", "--management-url", MGMT_URL])
-        .map(|_| ())
-        .map_err(|e| e.to_string())
+    let out = cmd(&["up", "--management-url", MGMT_URL]).map_err(|e| e.to_string())?;
+    if out.status.success() {
+        return Ok(());
+    }
+    // netbird мог быть настроен на другой management (по умолчанию api.netbird.io)
+    // и отказаться менять его на лету — сбрасываем и переподключаемся на наш сервер
+    let err = String::from_utf8_lossy(&out.stderr).to_lowercase();
+    if err.contains("management") || err.contains("url") || err.contains("differ") {
+        let _ = cmd(&["down"]);
+        let out2 = cmd(&["up", "--management-url", MGMT_URL]).map_err(|e| e.to_string())?;
+        if out2.status.success() {
+            return Ok(());
+        }
+        return Err(String::from_utf8_lossy(&out2.stderr).trim().to_string());
+    }
+    Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
 }
 
 #[tauri::command]

@@ -65,6 +65,38 @@ jobs:
           prerelease: false
           args: ${{ matrix.args }}
 
+      # Копии со стабильными именами (без версии) — чтобы ссылки .../releases/latest/download/<имя>
+      # на help-странице работали и не ломались при выходе новой версии.
+      - name: Stable-named asset (Windows)
+        if: matrix.platform == 'windows-latest' && github.ref_type == 'tag'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          f=$(ls src-tauri/target/release/bundle/msi/*.msi | head -1)
+          cp "$f" "Genomed-VPN-x64.msi"
+          gh release upload "${{ github.ref_name }}" "Genomed-VPN-x64.msi" --clobber
+
+      - name: Stable-named asset (macOS)
+        if: matrix.platform == 'macos-latest' && github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          f=$(ls src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg | head -1)
+          cp "$f" "Genomed-VPN-universal.dmg"
+          gh release upload "${{ github.ref_name }}" "Genomed-VPN-universal.dmg" --clobber
+
+      - name: Stable-named assets (Linux)
+        if: matrix.platform == 'ubuntu-22.04' && github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          deb=$(ls src-tauri/target/release/bundle/deb/*.deb | head -1)
+          app=$(ls src-tauri/target/release/bundle/appimage/*.AppImage | head -1)
+          cp "$deb" "Genomed-VPN-amd64.deb"
+          cp "$app" "Genomed-VPN-x86_64.AppImage"
+          gh release upload "${{ github.ref_name }}" "Genomed-VPN-amd64.deb" "Genomed-VPN-x86_64.AppImage" --clobber
+
       # Если запустили вручную (без тега) — сложим бинарники как artifacts прогона
       - name: Upload artifacts (manual runs)
         if: github.ref_type != 'tag'

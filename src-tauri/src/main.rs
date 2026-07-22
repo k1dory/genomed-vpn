@@ -8,13 +8,27 @@ use tauri::{
 
 const MGMT_URL: &str = "https://vpn.genomed-security.ru";
 const HELP_URL: &str = "https://help.genomed-security.ru";
+const DOWNLOAD_URL: &str = "https://github.com/k1dory/genomed-vpn/releases/latest";
+const RELEASE_API: &str = "https://api.github.com/repos/k1dory/genomed-vpn/releases/latest";
+
+// Сколько ждём завершения `netbird up`: при SSO команда блокируется, пока
+// пользователь не пройдёт вход в браузере. Щедрый лимит, чтобы не обрывать логин.
+const UP_TIMEOUT_SECS: u64 = 180;
 
 #[derive(Serialize)]
 struct Status {
-    state: String,       // Connected | Connecting | NeedsLogin | Disconnected | NotInstalled | Unknown
+    state: String, // Connected | Connecting | NeedsLogin | Disconnected | NotInstalled | Unknown
     ip: String,
     mgmt_url: String,
     mgmt_ok: bool,
+}
+
+#[derive(Serialize)]
+struct UpdateInfo {
+    current: String,
+    latest: String,
+    available: bool,
+    url: String,
 }
 
 /// Абсолютный путь к бинарю netbird, если он установлен, иначе имя для поиска в PATH.
@@ -48,6 +62,7 @@ fn netbird_exe() -> String {
     }
 }
 
+/// Короткая команда netbird с ожиданием результата (status/down).
 #[cfg(target_os = "windows")]
 fn cmd(args: &[&str]) -> std::io::Result<std::process::Output> {
     use std::os::windows::process::CommandExt;
@@ -60,6 +75,92 @@ fn cmd(args: &[&str]) -> std::io::Result<std::process::Output> {
 #[cfg(not(target_os = "windows"))]
 fn cmd(args: &[&str]) -> std::io::Result<std::process::Output> {
     Command::new(netbird_exe()).args(args).output()
+}
+
+/// Команда netbird с таймаутом. Нужна для `up`: при SSO она блокируется до входа,
+/// и без ограничения интерфейс завис бы навсегда, если пользователь не завершил логин.
+fn cmd_timeout(args: &[&str], secs: u64) -> std::io::Result<std::process::Output> {
+    use std::process::Stdio;
+    let mut c = Command::new(netbird_exe());
+    c.args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        c.creation_flags(0x08000000);
+    }
+    let mut child = c.spawn()?;
+    let start = std::time::Instant::now();
+    loop {
+        if child.try_wait()?.is_some() {
+            return child.wait_with_output();
+        }
+        if start.elapsed().as_secs() >= secs {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "истекло время ожидания входа",
+            ));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+}
+
+/// HTTP GET через системный инструмент (без тяжёлых сетевых зависимостей).
+/// Используется только для проверки обновлений; при любой ошибке возвращает None.
+fn http_get(url: &str) -> Option<String> {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        let ps = format!(
+            "$ProgressPreference='SilentlyContinue'; \
+             (Invoke-WebRequest -Uri '{url}' \
+             -Headers @{{'User-Agent'='genomed-vpn'}} -UseBasicParsing -TimeoutSec 6).Content"
+        );
+        let out = Command::new("powershell")
+            .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &ps])
+            .creation_flags(0x08000000)
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        Some(String::from_utf8_lossy(&out.stdout).to_string())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let out = Command::new("curl")
+            .args([
+                "-fsSL",
+                "--max-time",
+                "6",
+                "-H",
+                "User-Agent: genomed-vpn",
+                url,
+            ])
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        Some(String::from_utf8_lossy(&out.stdout).to_string())
+    }
+}
+
+/// Сравнение версий вида `a.b.c` — true, если a строго новее b.
+fn version_gt(a: &str, b: &str) -> bool {
+    let parse = |s: &str| -> Vec<u32> {
+        s.split('.').map(|x| x.parse().unwrap_or(0)).collect()
+    };
+    let (pa, pb) = (parse(a), parse(b));
+    for i in 0..3 {
+        let x = pa.get(i).copied().unwrap_or(0);
+        let y = pb.get(i).copied().unwrap_or(0);
+        if x != y {
+            return x > y;
+        }
+    }
+    false
 }
 
 #[tauri::command]
@@ -101,22 +202,24 @@ fn nb_status() -> Status {
 
 #[tauri::command]
 fn nb_up() -> Result<(), String> {
-    let out = cmd(&["up", "--management-url", MGMT_URL]).map_err(|e| e.to_string())?;
+    let out = cmd_timeout(&["up", "--management-url", MGMT_URL], UP_TIMEOUT_SECS)
+        .map_err(|e| e.to_string())?;
     if out.status.success() {
         return Ok(());
     }
     // netbird мог быть настроен на другой management (по умолчанию api.netbird.io)
-    // и отказаться менять его на лету — сбрасываем и переподключаемся на наш сервер
-    let err = String::from_utf8_lossy(&out.stderr).to_lowercase();
-    if err.contains("management") || err.contains("url") || err.contains("differ") {
-        let _ = cmd(&["down"]);
-        let out2 = cmd(&["up", "--management-url", MGMT_URL]).map_err(|e| e.to_string())?;
-        if out2.status.success() {
-            return Ok(());
-        }
-        return Err(String::from_utf8_lossy(&out2.stderr).trim().to_string());
+    // и отказаться менять его на лету. Безопасно сбрасываем и переподключаемся на наш
+    // сервер — без хрупкого разбора текста ошибки: down идемпотентен, повторный up
+    // либо поднимает туннель, либо запускает SSO-вход.
+    let first_err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    let _ = cmd(&["down"]);
+    let out2 = cmd_timeout(&["up", "--management-url", MGMT_URL], UP_TIMEOUT_SECS)
+        .map_err(|e| e.to_string())?;
+    if out2.status.success() {
+        return Ok(());
     }
-    Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+    let second_err = String::from_utf8_lossy(&out2.stderr).trim().to_string();
+    Err(if second_err.is_empty() { first_err } else { second_err })
 }
 
 #[tauri::command]
@@ -125,16 +228,30 @@ fn nb_down() -> Result<(), String> {
 }
 
 /// Bootstrap: скачивает официальный установщик NetBird и запускает его.
-/// Windows — полный автомат (скачивание + запуск с правами администратора, UAC).
-/// macOS   — скачивает .pkg и открывает штатный установщик.
+/// Windows — полный автомат: скачивание, проверка цифровой подписи, запуск с UAC
+///           и ожидание завершения установщика.
+/// macOS   — скачивает .pkg (с проверкой успеха загрузки) и открывает штатный установщик.
 /// Linux   — открывает официальную страницу установки (нужен sudo/скрипт).
 #[tauri::command]
 fn install_netbird() -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
-        // одной командой: тихо скачиваем во %TEMP% и запускаем с UAC (Start-Process -Verb RunAs)
-        let ps = r#"$ProgressPreference='SilentlyContinue'; $u='https://pkgs.netbird.io/windows/x64'; $o=Join-Path $env:TEMP 'netbird_installer.exe'; Invoke-WebRequest -Uri $u -OutFile $o -UseBasicParsing; Start-Process -FilePath $o -Verb RunAs"#;
+        // Скачиваем во %TEMP%, ПРОВЕРЯЕМ Authenticode-подпись установщика (защита от
+        // подмены при MITM/компрометации зеркала) и только затем запускаем с UAC.
+        // -Wait: PowerShell дожидается закрытия установщика, поэтому отмена UAC или
+        // сбой установки вернутся сюда ненулевым кодом и превратятся в Err — интерфейс
+        // не зависнет в состоянии «устанавливается».
+        let ps = r#"
+$ErrorActionPreference='Stop';
+$ProgressPreference='SilentlyContinue';
+$u='https://pkgs.netbird.io/windows/x64';
+$o=Join-Path $env:TEMP 'netbird_installer.exe';
+Invoke-WebRequest -Uri $u -OutFile $o -UseBasicParsing;
+$sig=Get-AuthenticodeSignature $o;
+if ($sig.Status -ne 'Valid') { Write-Error ('Недействительная подпись установщика NetBird: ' + $sig.Status); exit 1 }
+Start-Process -FilePath $o -Verb RunAs -Wait
+"#;
         let out = Command::new("powershell")
             .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps])
             .creation_flags(0x08000000)
@@ -143,18 +260,30 @@ fn install_netbird() -> Result<(), String> {
         if out.status.success() {
             return Ok(());
         }
-        return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+        let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        return Err(if err.is_empty() {
+            "установка отменена или не завершена".into()
+        } else {
+            err
+        });
     }
 
     #[cfg(target_os = "macos")]
     {
-        let arch = if std::env::consts::ARCH == "aarch64" { "arm64" } else { "amd64" };
+        let arch = if std::env::consts::ARCH == "aarch64" {
+            "arm64"
+        } else {
+            "amd64"
+        };
         let url = format!("https://pkgs.netbird.io/macos/{arch}");
         let dest = "/tmp/netbird_installer.pkg";
-        Command::new("curl")
+        let dl = Command::new("curl")
             .args(["-fsSL", "-o", dest, &url])
             .output()
             .map_err(|e| e.to_string())?;
+        if !dl.status.success() {
+            return Err("не удалось скачать установщик NetBird".into());
+        }
         // открывает штатный macOS Installer.app
         Command::new("open")
             .arg(dest)
@@ -172,6 +301,33 @@ fn install_netbird() -> Result<(), String> {
             .map(|_| ())
             .map_err(|e| e.to_string())
     }
+}
+
+/// Проверка обновления самого приложения через GitHub Releases.
+/// Сеть недоступна или ошибка → available=false (тихо, без падения).
+#[tauri::command]
+fn check_update() -> UpdateInfo {
+    let current = env!("CARGO_PKG_VERSION").to_string();
+    let latest = http_get(RELEASE_API)
+        .and_then(|body| serde_json::from_str::<serde_json::Value>(&body).ok())
+        .and_then(|v| {
+            v["tag_name"]
+                .as_str()
+                .map(|s| s.trim_start_matches('v').to_string())
+        })
+        .unwrap_or_default();
+    let available = !latest.is_empty() && version_gt(&latest, &current);
+    UpdateInfo {
+        current,
+        latest,
+        available,
+        url: DOWNLOAD_URL.into(),
+    }
+}
+
+#[tauri::command]
+fn open_download(app: tauri::AppHandle) {
+    let _ = tauri::api::shell::open(&app.shell_scope(), DOWNLOAD_URL, None);
 }
 
 #[tauri::command]
@@ -204,9 +360,15 @@ fn main() {
                         let _ = w.set_focus();
                     }
                 }
-                "connect" => { let _ = nb_up(); }
-                "disconnect" => { let _ = nb_down(); }
-                "help" => { let _ = tauri::api::shell::open(&app.shell_scope(), HELP_URL, None); }
+                "connect" => {
+                    let _ = nb_up();
+                }
+                "disconnect" => {
+                    let _ = nb_down();
+                }
+                "help" => {
+                    let _ = tauri::api::shell::open(&app.shell_scope(), HELP_URL, None);
+                }
                 "quit" => std::process::exit(0),
                 _ => {}
             },
@@ -215,7 +377,7 @@ fn main() {
         .on_window_event(|e| {
             // крестик прячет в трей, а не закрывает
             if let tauri::WindowEvent::CloseRequested { api, .. } = e.event() {
-                e.window().hide().unwrap();
+                let _ = e.window().hide();
                 api.prevent_close();
             }
         })
@@ -224,6 +386,8 @@ fn main() {
             nb_up,
             nb_down,
             install_netbird,
+            check_update,
+            open_download,
             open_help
         ])
         .run(tauri::generate_context!())

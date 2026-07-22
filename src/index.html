@@ -6,26 +6,45 @@
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <div class="card">
-    <div class="brand">
+  <main class="card">
+    <header class="brand">
       <img class="logo" src="logo.png" alt="Genomed VPN" />
-    </div>
+    </header>
 
-    <div class="toggle-row">
-      <button id="toggle" class="toggle"><span class="knob"></span></button>
-      <div class="labels">
+    <section class="status" aria-live="polite">
+      <span id="dot" class="dot"></span>
+      <div class="status-text">
         <div id="state" class="state">Проверка…</div>
         <div id="ip" class="ip"></div>
       </div>
-    </div>
+      <button id="toggle" class="toggle" aria-label="Переключить подключение">
+        <span class="knob"></span>
+      </button>
+    </section>
+
+    <button id="install" class="btn btn-primary" hidden>Установить NetBird</button>
 
     <div class="field">
-      <label>Сервер</label>
-      <input id="url" type="text" readonly />
+      <label for="url">Сервер</label>
+      <div class="field-input">
+        <svg class="lock" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+          <path fill="currentColor" d="M12 1a5 5 0 0 0-5 5v3H6a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-9a2 2 0 0 0-2-2h-1V6a5 5 0 0 0-5-5zm-3 8V6a3 3 0 0 1 6 0v3H9z"/>
+        </svg>
+        <input id="url" type="text" readonly />
+      </div>
     </div>
 
-    <button id="help" class="help">Помощь</button>
-  </div>
+    <button id="help" class="btn btn-ghost">Помощь и поддержка</button>
+
+    <button id="update" class="update" hidden>
+      <span class="update-text"></span>
+      <span class="update-cta">Обновить →</span>
+    </button>
+
+    <footer class="foot">
+      <span id="version" class="version"></span>
+    </footer>
+  </main>
   <script type="module" src="main.js"></script>
 </body>
 </html>
